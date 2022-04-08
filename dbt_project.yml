@@ -8,12 +8,16 @@ vars:
     account: "{{ ref('stg_xero__account') }}"
     contact: "{{ ref('stg_xero__contact') }}"
     invoice_line_item: "{{ ref('stg_xero__invoice_line_item') }}"
+    invoice_line_item_tracking: "{{ ref('stg_xero__invoice_line_item_tracking') }}"
     invoice: "{{ ref('stg_xero__invoice') }}"
     journal_line: "{{ ref('stg_xero__journal_line') }}"
+    journal_line_tracking: "{{ ref('stg_xero__journal_line_tracking') }}"
     journal: "{{ ref('stg_xero__journal') }}"
     organization: "{{ ref('stg_xero__organization') }}"
     credit_note: "{{ ref('stg_xero__credit_note') }}"
+    credit_note_tracking: "{{ ref('stg_xero__credit_note_tracking') }}"
     bank_transaction: "{{ ref('stg_xero__bank_transaction') }}"
+    bank_transaction_tracking: "{{ ref('stg_xero__bank_transaction_tracking') }}"
 
     xero__using_bank_transaction: true
     xero__using_credit_note: true

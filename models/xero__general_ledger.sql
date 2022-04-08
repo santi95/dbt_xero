@@ -5,8 +5,10 @@ with journals as (
 
 ), journal_lines as (
 
-    select *
-    from {{ var('journal_line') }}
+    select j.*, jt.option
+    from {{ var('journal_line') }} j
+    left join {{  var('journal_line_tracking') }} jt on
+        j.journal_line_id = jt.journal_line_id
 
 ), accounts as (
 
@@ -15,22 +17,29 @@ with journals as (
 
 ), invoices as (
 
-    select *
-    from {{ var('invoice') }}
+    select i.*, it.option
+    from {{ var('invoice') }} i
+    left join {{ var('invoice_line_item_tracking') }} it on
+        i.invoice_id = it.invoice_id
 
 {% if var('xero__using_bank_transaction', True) %}
 ), bank_transactions as (
 
-    select *
-    from {{ var('bank_transaction') }}
+    select b.*, bt.option
+    from {{ var('bank_transaction') }} b
+    left join {{ var('bank_transaction_tracking') }} bt on
+        b.bank_transaction_id = bt.bank_transaction_id
 
 {% endif %}
 
 {% if var('xero__using_credit_note', True) %}
 ), credit_notes as (
 
-    select *
-    from {{ var('credit_note') }}
+    select c.*, ct.option
+    from {{ var('credit_note') }} c
+    left join {{ var('credit_note_tracking') }} ct on
+        c.credit_note_id = ct.credit_note_id
+
 {% endif %}
 
 ), contacts as (
@@ -55,6 +64,7 @@ with journals as (
         accounts.account_name,
         accounts.account_type,
         journal_lines.description,
+        journal_lines.option,
         journal_lines.gross_amount,
         journal_lines.net_amount,
         journal_lines.tax_amount,
@@ -96,7 +106,22 @@ with journals as (
         invoices.contact_id
         {% endif %}
 
-        as contact_id
+        as contact_id,
+
+        coalesce(
+            joined.option
+            ,invoices.option
+            {% if var('xero__using_bank_transaction', True) %}
+                , bank_transactions.option
+            {% endif %}
+
+            {% if var('xero__using_credit_note', True) %}
+                , credit_notes.option
+            {% endif %}
+        )
+
+        as full_option,
+
     from joined
     left join invoices 
         on (joined.invoice_id = invoices.invoice_id
