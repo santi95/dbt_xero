@@ -1,3 +1,3 @@
 packages:
-  - git: "https://github.com/santi95/dbt_xero"
-    revision: featu/division
+- git: "https://github.com/santi95/dbt_xero_source"
+  revision: featu/division

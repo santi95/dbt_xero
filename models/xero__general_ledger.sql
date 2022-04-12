@@ -5,10 +5,25 @@ with journals as (
 
 ), journal_lines as (
 
-    select j.*, jt.option
+    select 
+        j.journal_line_id,
+        j.source_relation,
+        j.account_code,
+        j.account_id,
+        j.account_name,
+        j.account_type,
+        jt.option,
+        j.description,
+        j.gross_amount,
+        j.journal_id,
+        j.net_amount,
+        j.tax_amount,
+        j.tax_name,
+        j.tax_type
     from {{ var('journal_line') }} j
     left join {{  var('journal_line_tracking') }} jt on
         j.journal_line_id = jt.journal_line_id
+    {{ dbt_utils.group_by(14) }}
 
 ), accounts as (
 
@@ -17,28 +32,59 @@ with journals as (
 
 ), invoices as (
 
-    select i.*, it.option
+    select 
+        i.invoice_id,
+        i.source_relation,
+        i.contact_id,
+        i.invoice_date,
+        i.updated_date,
+        i.planned_payment_date,
+        i.due_date,
+        i.expected_payment_date,
+        i.fully_paid_on_date,
+        i._fivetran_synced,
+        i.currency_code,
+        i.currency_rate,
+        i.invoice_number,
+        i.reference,
+        i.is_sent_to_contact,
+        i.invoice_status,
+        i.type,
+        i.url,
+        it.option
     from {{ var('invoice') }} i
     left join {{ var('invoice_line_item_tracking') }} it on
         i.invoice_id = it.invoice_id
+    {{ dbt_utils.group_by(19) }}
 
 {% if var('xero__using_bank_transaction', True) %}
 ), bank_transactions as (
 
-    select b.*, bt.option
+    select         
+        b.bank_transaction_id,
+        b.source_relation,
+        b.contact_id,
+        bt.option
     from {{ var('bank_transaction') }} b
     left join {{ var('bank_transaction_tracking') }} bt on
         b.bank_transaction_id = bt.bank_transaction_id
+    {{ dbt_utils.group_by(4) }}
+
 
 {% endif %}
 
 {% if var('xero__using_credit_note', True) %}
 ), credit_notes as (
 
-    select c.*, ct.option
+    select 
+        c.credit_note_id,
+        c.source_relation,
+        c.contact_id, 
+        ct.option
     from {{ var('credit_note') }} c
     left join {{ var('credit_note_tracking') }} ct on
         c.credit_note_id = ct.credit_note_id
+    {{ dbt_utils.group_by(4) }}
 
 {% endif %}
 
@@ -71,7 +117,6 @@ with journals as (
         journal_lines.tax_name,
         journal_lines.tax_type,
         accounts.account_class,
-
         case when journals.source_type in ('ACCPAY', 'ACCREC') then journals.source_id end as invoice_id,
         case when journals.source_type in ('CASHREC','CASHPAID') then journals.source_id end as bank_transaction_id,
         case when journals.source_type in ('TRANSFER') then journals.source_id end as bank_transfer_id,
@@ -137,6 +182,7 @@ with journals as (
         on (joined.credit_note_id = credit_notes.credit_note_id
         and joined.source_relation = credit_notes.source_relation)
     {% endif %}
+    {{ dbt_utils.group_by(29) }}
 
 ), second_contact as (
 
