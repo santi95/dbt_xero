@@ -48,15 +48,25 @@ with calendar as (
             when ledger.account_class in ('ASSET','EQUITY','LIABILITY') then ledger.account_class
             else 'EQUITY'
         end as account_class,
+        {% if var('xero__using_bank_transaction', True) %}
+            ledger.bank_transfer_id,
+            bt.currency_rate,
+        {% endif %}
         ledger.source_relation, 
         sum(ledger.net_amount) as net_amount
     from calendar
     inner join ledger
         on calendar.date_month >= cast({{ dbt_utils.date_trunc('month', 'ledger.journal_date') }} as date)
     cross join year_end
-    {{ dbt_utils.group_by(7) }}
+    {% if var('xero__using_bank_transaction', True) %}
+        left join {{ ref('stg_xero__bank_transfer') }} as bt on bt.bank_transfer_id = ledger.bank_transfer_id
+        {{ dbt_utils.group_by(9) }}
+    {% else %}
+        {{ dbt_utils.group_by(7) }}
+    {% endif %}
 
 )
 
 select *
 from joined
+where net_amount != 0
