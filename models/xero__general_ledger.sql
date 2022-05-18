@@ -58,18 +58,27 @@ with journals as (
     {{ dbt_utils.group_by(19) }}
 
 {% if var('xero__using_bank_transaction', True) %}
-), bank_transactions as (
+), bank_transactions_pre as (
 
     select         
         b.bank_transaction_id,
         b.source_relation,
         b.contact_id,
-        bt.option
+        max(bt.option) as option,
+        count(1) as options_no
     from {{ var('bank_transaction') }} b
     left join {{ var('bank_transaction_tracking') }} bt on
         b.bank_transaction_id = bt.bank_transaction_id
-    {{ dbt_utils.group_by(4) }}
+    {{ dbt_utils.group_by(3) }}
+), bank_transactions as (
 
+    select 
+        bank_transaction_id,
+        source_relation,
+        contact_id,
+        case when options_no > 1 then null else option end as option
+    from bank_transactions_pre
+    {{ dbt_utils.group_by(4) }}
 
 {% endif %}
 
@@ -171,6 +180,7 @@ with journals as (
     left join invoices 
         on (joined.invoice_id = invoices.invoice_id
         and joined.source_relation = invoices.source_relation)
+    -- TODO: Take care of duplicated values, if multiple divisions then empty
     {% if var('xero__using_bank_transaction', True) %}
     left join bank_transactions
         on (joined.bank_transaction_id = bank_transactions.bank_transaction_id
