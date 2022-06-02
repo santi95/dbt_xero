@@ -375,12 +375,12 @@ with journals as (
         first_contact.*,
         case 
             when coalesce(bank_transaction_id, invoice_id, credit_note_id) is not null
-                then (first_contact.joined_net_amount / fxcad.currency_rate)  * fxus.currency_rate
+                then (first_contact.joined_net_amount / fxcad.currency_rate)  
             end as common_values,
 
         case
             when coalesce(bank_transfer_id, payment_id) is not null
-                then (first_contact.raw_net_amount / fxall.currency_rate) * fxus.currency_rate
+                then (first_contact.raw_net_amount / fxall.currency_rate) 
         end as bank_transfer_values,
         contacts.contact_name
     from first_contact
@@ -393,7 +393,23 @@ with journals as (
         on (first_contact.contact_id = contacts.contact_id
         and first_contact.source_relation = contacts.source_relation)
     where fxcad.currency_code = 'CAD' and fxus.currency_code = 'USD'
-)
+), 
 
-select *, coalesce(common_values, bank_transfer_values) as final_net_amount
+n_options as (
+SELECT  
+    source_id, 
+    account_name, 
+    journal_number, 
+    count(distinct option )+ count( case when option is null then 1 end) as number_option
+FROM second_contact
+group by 1,2,3)
+
+
+
+select second_contact.*, coalesce(common_values, bank_transfer_values) as final_net_amount, 
+coalesce(raw_net_amount/n_options.number_option, joined_net_amount * currency_rate ) as original_amount, 
 from second_contact
+left join n_options 
+    on n_options.source_id = second_contact.source_id
+    and n_options.account_name = second_contact.account_name
+    and n_options.journal_number = second_contact.journal_number
