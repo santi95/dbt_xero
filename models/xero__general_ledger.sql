@@ -1,11 +1,19 @@
-with journals as (
-
-    select *
-    from {{ var('journal') }}
-
-), journal_lines as (
-
-    select 
+WITH ORGANIZATION AS (
+    SELECT
+        base_currency
+    FROM
+        {{ var('organization') }}
+    LIMIT
+        1
+), journals AS (
+    SELECT
+        *
+    FROM
+        {{ var('journal') }}
+        -- Union all con manual
+),
+journal_lines AS (
+    SELECT
         j.journal_line_id,
         j.source_relation,
         j.account_code,
@@ -20,19 +28,22 @@ with journals as (
         j.tax_amount,
         j.tax_name,
         j.tax_type
-    from {{ var('journal_line') }} j
-    left join {{  var('journal_line_tracking') }} jt on
-        j.journal_line_id = jt.journal_line_id
-    {{ dbt_utils.group_by(14) }}
-
-), accounts as (
-
-    select *
-    from {{ var('account') }}
-
-), invoices as (
-
-    select 
+    FROM
+        {{ var('journal_line') }}
+        j --1062602
+        LEFT JOIN {{ var('journal_line_tracking') }}
+        jt
+        ON --1062602
+        j.journal_line_id = jt.journal_line_id {{ dbt_utils.group_by(14) }}
+),
+accounts AS (
+    SELECT
+        *
+    FROM
+        {{ var('account') }}
+),
+invoices AS (
+    SELECT
         i.invoice_id,
         i.source_relation,
         i.contact_id,
@@ -47,155 +58,185 @@ with journals as (
         i.currency_rate,
         i.invoice_number,
         i.sub_total,
-        i.total,
+        i.total AS amount,
         i.total_tax,
         i.reference,
         i.is_sent_to_contact,
         i.invoice_status,
         i.type,
         i.url,
-        case 
-            when count(1) > 1 then 'Multiple Categories'
-            else max(it.option)
-        end as option
-    from {{ var('invoice') }} i
-    left join {{ var('invoice_line_item_tracking') }} it on
-        i.invoice_id = it.invoice_id
-    {{ dbt_utils.group_by(21) }}
+        CASE
+            WHEN COUNT(1) > 1 THEN 'Multiple Categories'
+            ELSE MAX(
+                it.option
+            )
+        END AS OPTION
+    FROM
+        {{ var('invoice') }} AS i --32244
+        LEFT JOIN {{ var('invoice_line_item_tracking') }} AS it
+        ON --48049
+        i.invoice_id = it.invoice_id {{ dbt_utils.group_by(21) }}
 
-{% if var('xero__using_bank_transaction', True) %}
-), bank_transactions_pre as (
-
-    select         
+        {% if var(
+                'xero__using_bank_transaction',
+                True
+            ) %}
+),
+bank_transactions_pre AS (
+    SELECT
         b.bank_transaction_id,
         b.source_relation,
         b.contact_id,
         b.sub_total,
         b.total,
         b.total_tax,
-        coalesce(b.currency_rate, 1) as currency_rate,
+        COALESCE(
+            b.currency_rate,
+            1
+        ) AS currency_rate,
         currency_code,
-        max(bt.option) as option,
-        count(1) as options_no
-    from {{ var('bank_transaction') }} b
-    left join {{ var('bank_transaction_tracking') }} bt on
-        b.bank_transaction_id = bt.bank_transaction_id
-    {{ dbt_utils.group_by(8) }}
-), bank_transactions as (
-
-    select 
+        CASE
+            WHEN COUNT(1) > 1 THEN 'Multiple Categories'
+            ELSE MAX(
+                bt.option
+            )
+        END AS OPTION
+    FROM
+        {{ var('bank_transaction') }}
+        b --288,092
+        LEFT JOIN {{ var('bank_transaction_tracking') }} AS bt
+        ON --289,577
+        b.bank_transaction_id = bt.bank_transaction_id {{ dbt_utils.group_by(8) }}
+),
+bank_transactions AS (
+    SELECT
         bank_transaction_id,
         source_relation,
         contact_id,
         currency_rate,
         currency_code,
         sub_total,
-        total,
+        total AS amount,
         total_tax,
-        case when options_no > 1 then 'Multiple Categories' else option end as option
-    from bank_transactions_pre
-    {{ dbt_utils.group_by(9) }}
-), bank_transfers as (
-
-    select 
+        OPTION
+    FROM
+        bank_transactions_pre {{ dbt_utils.group_by(9) }}
+),
+bank_transfers AS (
+    SELECT
         b.bank_transfer_id,
-        case 
-            when btf.currency_code = 'USD' then btf.total
-            when btt.currency_code = 'USD' then btt.total
-            else b.amount
-        end as amount,
-        case 
-            when btf.currency_code = 'USD' then 'USD'
-            when btt.currency_code = 'USD' then 'USD'
-            else btf.currency_code
-        end as bt_classification,
-        b.currency_rate,
         b.date,
+        b.amount,
+        b.currency_rate,
         b.from_bank_account_id,
         b.from_bank_transaction_id,
-        b.has_attachments,
+        btf.currency_code AS from_currency_code,
+        btf.amount AS from_amount,
         b.to_bank_account_id,
         b.to_bank_transaction_id,
+        btt.currency_code AS to_currency_code,
+        btt.amount AS to_amount,
+        b.has_attachments,
         b.source_relation
-    from {{ var('bank_transfer') }} b
-    left join bank_transactions btf on b.from_bank_transaction_id = btf.bank_transaction_id
-    left join bank_transactions btt on b.to_bank_transaction_id = btt.bank_transaction_id
-    {{ dbt_utils.group_by(11) }}
-
-{% endif %}
-
-{% if var('xero__using_credit_note', True) %}
-), credit_notes_pre as (
-
-    select 
-        c.credit_note_id,
-        c.source_relation,
-        c.contact_id,
-        coalesce(c.currency_rate, 1) as currency_rate,
-        currency_code,
-        c.sub_total,
-        c.total,
-        c.total_tax,
-        max(ct.option) as option,
-        count(1) as options_no
-    from {{ var('credit_note') }} c
-    left join {{ var('credit_note_tracking') }} ct on
-        c.credit_note_id = ct.credit_note_id
-    {{ dbt_utils.group_by(8) }}
-), credit_notes as (
-
-    select 
-        c.credit_note_id,
-        c.source_relation,
-        c.contact_id,
-        coalesce(c.currency_rate, 1) as currency_rate,
-        currency_code,
-        c.sub_total,
-        c.total,
-        c.total_tax,
-        case when options_no > 1 then 'Multiple Categories' else option end as option
-    from credit_notes_pre c
-    {{ dbt_utils.group_by(9) }}
-
-{% endif %}
-
-), payments as (
-
-    select 
-        p.payment_id,
-        p.currency_rate,
-        p.invoice_id,
-        p.date,
-        p.status,
-        p.amount,
-        p.account_id,
-        p.credit_note_id,
-        p.bank_amount,
-        p.source_relation, 
-        coalesce(
-            i.currency_code
-            {% if var('xero__using_credit_note', True) %}
-            , c.currency_code
-            {%  endif %}
-        ) as currency_code
-    from {{ var('payment') }} as p
-    left join {{ var('invoice') }} as i 
-        on p.invoice_id = i.invoice_id
-    {% if var('xero__using_credit_note', True) %}
-    left join credit_notes c
-        on p.credit_note_id = c.credit_note_id
+    FROM
+        {{ var('bank_transfer') }}
+        b --8,368
+        LEFT JOIN bank_transactions AS btf
+        ON b.from_bank_transaction_id = btf.bank_transaction_id
+        LEFT JOIN bank_transactions AS btt
+        ON b.to_bank_transaction_id = btt.bank_transaction_id
     {% endif %}
 
-), contacts as (
-
-    select *
-    from {{ var('contact') }}
-
-), joined as (
-
-    select 
+    {% if var(
+            'xero__using_credit_note',
+            True
+        ) %}
+),
+credit_notes AS (
+    SELECT
+        C.credit_note_id,
+        C.source_relation,
+        C.contact_id,
+        COALESCE(
+            C.currency_rate,
+            1
+        ) AS currency_rate,
+        currency_code,
+        C.sub_total,
+        C.total AS amount,
+        C.total_tax,
+        CASE
+            WHEN COUNT(1) > 1 THEN 'Multiple Categories'
+            ELSE MAX(
+                ct.option
+            )
+        END AS OPTION
+    FROM
+        {{ var('credit_note') }} C
+        LEFT JOIN {{ var('credit_note_tracking') }} AS ct
+        ON C.credit_note_id = ct.credit_note_id {{ dbt_utils.group_by(8) }}
+    {% endif %}
+),
+payments AS (
+    SELECT
+        payment_id,
+        account_id,
+        currency_rate,
+        DATE,
+        status,
+        amount,
+        bank_amount,
+        invoice_id,
+        credit_note_id
+    FROM
+        {{ var('payment') }}
+),
+contacts AS (
+    SELECT
+        *
+    FROM
+        {{ var('contact') }}
+),
+raw_amounts AS (
+    SELECT
+        invoice_id AS source_id,
+        amount,
+        currency_code
+    FROM
+        invoices
+    UNION ALL
+    SELECT
+        bank_transaction_id AS source_id,
+        amount,
+        currency_code
+    FROM
+        bank_transactions
+    UNION ALL
+    SELECT
+        bank_transfer_id AS source_id,
+        amount,
+        from_currency_code
+    FROM
+        bank_transfers
+    UNION ALL
+    SELECT
+        credit_note_id AS source_id,
+        amount,
+        currency_code
+    FROM
+        credit_notes
+    UNION ALL
+        -- We need to get the currency_code for payments first
+    SELECT
+        payment_id AS source_id,
+        amount,
+        "CAD" AS currency_code
+    FROM
+        payments
+),
+enriched_journal AS (
+    SELECT
         journals.journal_id,
-        journals.created_date_utc,
         journals.journal_date,
         journals.journal_number,
         journals.reference,
@@ -207,8 +248,8 @@ with journals as (
         accounts.account_id,
         accounts.account_name,
         accounts.account_type,
-        accounts.currency_code as account_currency_code,
-        accounts.description as account_description,
+        accounts.currency_code AS account_currency_code,
+        accounts.description AS account_description,
         journal_lines.description,
         journal_lines.option,
         journal_lines.gross_amount,
@@ -216,184 +257,145 @@ with journals as (
         journal_lines.tax_amount,
         journal_lines.tax_name,
         journal_lines.tax_type,
-        accounts.account_class,
-        case when journals.source_type in ('ACCPAY', 'ACCREC') then journals.source_id end as invoice_id,
-        case when journals.source_type in ('CASHREC','CASHPAID') then journals.source_id end as bank_transaction_id,
-        case when journals.source_type in ('TRANSFER') then journals.source_id end as bank_transfer_id,
-        case when journals.source_type in ('MANJOURNAL') then journals.source_id end as manual_journal_id,
-        case when journals.source_type in ('APPREPAYMENT', 'APOVERPAYMENT', 'ACCPAYPAYMENT', 'ACCRECPAYMENT', 'ARCREDITPAYMENT', 'APCREDITPAYMENT') then journals.source_id end as payment_id,
-        case when journals.source_type in ('ACCPAYCREDIT','ACCRECCREDIT') then journals.source_id end as credit_note_id
-
-    from journals
-    left join journal_lines
-        on (journals.journal_id = journal_lines.journal_id
-        and journals.source_relation = journal_lines.source_relation)
-    left join accounts
-        on (accounts.account_id = journal_lines.account_id
-        and accounts.source_relation = journal_lines.source_relation)
-
-), first_contact as (
-
-    select 
-        joined.journal_id,
-        joined.created_date_utc,
-        joined.journal_date,
-        date_trunc(joined.journal_date,month) as month,
-        joined.journal_number,
-        joined.reference,
-        joined.source_id,
-        joined.source_type,
-        joined.source_relation,
-        joined.journal_line_id,
-        joined.account_code,
-        joined.account_id,
-        joined.account_name,
-        joined.account_type,
-        joined.account_currency_code,
-        joined.account_description,
-        joined.description,
-        joined.option,
-        joined.gross_amount,
-        abs(coalesce(
-
-            {% if var('xero__using_bank_transaction', True) %}
-                bank_transfers.amount,
-            {% endif %}
-
-            {% if var('xero__using_credit_note', True) %}
-                credit_notes.total ,
-            {% endif %}
-            
-            payments.amount
-            -- , joined.net_amount
-        )) * ( coalesce(safe_divide(joined.net_amount,abs(joined.net_amount)), 1)  ) as raw_net_amount,
-        bank_transfers.bt_classification,
-        joined.net_amount,
-
-        invoices.total as invoices_total, 
-        bank_transactions.total as bank_transactions_total, 
-        bank_transfers.amount as bank_transfers_amount, 
-        credit_notes.total     as credit_notes_total, 
-        payments.amount as payments_amount, 
-        joined.net_amount as joined_net_amount,
-
-        joined.tax_amount,
-        joined.tax_name,
-        joined.tax_type,
-        joined.account_class,
-        joined.invoice_id,
-        joined.bank_transaction_id,
-        joined.bank_transfer_id,
-        joined.manual_journal_id,
-        joined.payment_id,
-        joined.credit_note_id,
-        {% if fivetran_utils.enabled_vars_one_true(['xero__using_bank_transaction','xero__using_credit_note']) %}
-        coalesce(
-            invoices.contact_id
-            {% if var('xero__using_bank_transaction', True) %}
-                , bank_transactions.contact_id
-            {% endif %}
-
-            {% if var('xero__using_credit_note', True) %}
-            , credit_notes.contact_id
-            {% endif %}
+        accounts.account_class
+    FROM
+        journals
+        LEFT JOIN journal_lines
+        ON (
+            journals.journal_id = journal_lines.journal_id
         )
-        {% else %}
-        invoices.contact_id
-        {% endif %}
-
-        as contact_id,
-
-        coalesce(
-            joined.option
-            ,invoices.option
-            {% if var('xero__using_bank_transaction', True) %}
-                , bank_transactions.option
-            {% endif %}
-
-            {% if var('xero__using_credit_note', True) %}
-                , credit_notes.option
-            {% endif %}
+        LEFT JOIN accounts
+        ON (
+            accounts.account_id = journal_lines.account_id
         )
-
-        as full_option,
-        -- Maybe add all other tables? Creating those models
-        coalesce(
-            invoices.currency_rate,
-            payments.currency_rate
-            {% if var('xero__using_bank_transaction', True) %}
-                , bank_transactions.currency_rate
-            {% endif %}
-
-            {% if var('xero__using_credit_note', True) %}
-                , credit_notes.currency_rate
-            {% endif %}
+),
+first_contact AS (
+    SELECT
+        enriched_journal.journal_id,
+        enriched_journal.journal_date,
+        DATE_TRUNC(
+            enriched_journal.journal_date,
+            MONTH
+        ) AS MONTH,
+        enriched_journal.journal_number,
+        enriched_journal.reference,
+        enriched_journal.source_id,
+        enriched_journal.source_type,
+        CASE
+            WHEN enriched_journal.source_type = "ACCREC" THEN "Receivable Invoice"
+            WHEN enriched_journal.source_type = "ACCPAY" THEN "Payable Invoice"
+            WHEN enriched_journal.source_type = "ACCRECCREDIT" THEN "Receivable Credit Note"
+            WHEN enriched_journal.source_type = "ACCPAYCREDIT" THEN "Payable Credit Note"
+            WHEN enriched_journal.source_type = "ACCRECPAYMENT" THEN "Receivable Payment"
+            WHEN enriched_journal.source_type = "ACCPAYPAYMENT" THEN "Payable Payment"
+            WHEN enriched_journal.source_type = "ARCREDITPAYMENT" THEN "Receivable Credit Note Payment"
+            WHEN enriched_journal.source_type = "APCREDITPAYMENT" THEN "Payable Credit Note Payment"
+            WHEN enriched_journal.source_type = "CASHREC" THEN "Receive Money"
+            WHEN enriched_journal.source_type = "CASHPAID" THEN "Spend Money"
+            WHEN enriched_journal.source_type = "TRANSFER" THEN "Bank Transfer"
+            WHEN enriched_journal.source_type = "ARPREPAYMENT" THEN "Receivable Prepayment"
+            WHEN enriched_journal.source_type = "APPREPAYMENT" THEN "Payable Prepayment"
+            WHEN enriched_journal.source_type = "AROVERPAYMENT" THEN "Receivable Overpayment"
+            WHEN enriched_journal.source_type = "APOVERPAYMENT" THEN "Payable Overpayment"
+            WHEN enriched_journal.source_type = "EXPCLAIM" THEN "Expense Claim"
+            WHEN enriched_journal.source_type = "EXPPAYMENT" THEN "Expense Claim Payment"
+            WHEN enriched_journal.source_type = "MANJOURNAL" THEN "Manual Journal"
+            WHEN enriched_journal.source_type = "PAYSLIP" THEN "Payslip"
+            WHEN enriched_journal.source_type = "WAGEPAYABLE" THEN "Payroll Payable"
+            WHEN enriched_journal.source_type = "INTEGRATEDPAYROLLPE" THEN "Payroll Expense"
+            WHEN enriched_journal.source_type = "INTEGRATEDPAYROLLPT" THEN "Payroll Payment"
+            WHEN enriched_journal.source_type = "EXTERNALSPENDMONEY" THEN "Payroll Employee Payment"
+            WHEN enriched_journal.source_type = "INTEGRATEDPAYROLLPTPAYMENT" THEN "Payroll Tax Payment"
+            WHEN enriched_journal.source_type = "INTEGRATEDPAYROLLCN" THEN "Payroll Credit Note"
+            WHEN enriched_journal.source_type IS NULL THEN "Conversion Balance Journal"
+        END AS source_type_category,
+        enriched_journal.source_relation,
+        enriched_journal.journal_line_id,
+        enriched_journal.account_code,
+        enriched_journal.account_id,
+        enriched_journal.account_name,
+        enriched_journal.account_type,
+        enriched_journal.account_currency_code,
+        enriched_journal.account_description,
+        enriched_journal.description,
+        enriched_journal.option,
+        enriched_journal.gross_amount,
+        enriched_journal.net_amount,
+        enriched_journal.tax_amount,
+        enriched_journal.tax_name,
+        enriched_journal.tax_type
+    FROM
+        enriched_journal
+),
+net_base_currency AS (
+    SELECT
+        journal_id,
+        journal_date,
+        MONTH,
+        journal_number,
+        REFERENCE,
+        source_id,
+        source_type,
+        source_type_category,
+        source_relation,
+        journal_line_id,
+        account_code,
+        account_id,
+        account_name,
+        account_type,
+        COALESCE(
+            account_currency_code,
+            o.base_currency
+        ) AS account_currency_code,
+        base_currency,
+        account_description,
+        description,
+        OPTION,
+        net_amount AS base_currency_net_amount
+    FROM
+        first_contact AS fc
+        CROSS JOIN ORGANIZATION AS o
+),
+raw_net_amount AS (
+    SELECT
+        nb.*,
+        ra.amount * COALESCE(
+            safe_divide(ABS(base_currency_net_amount), base_currency_net_amount),
+            1) AS raw_amount,
+            ra.currency_code
+            FROM
+                net_base_currency nb
+                LEFT JOIN raw_amounts AS ra
+                ON nb.source_id = ra.source_id
         )
-
-        as currency_rate,
-
-        coalesce(
-            invoices.currency_code,
-            payments.currency_code
-            {% if var('xero__using_bank_transaction', True) %}
-                , bank_transactions.currency_code
-            {% endif %}
-
-            {% if var('xero__using_credit_note', True) %}
-                , credit_notes.currency_code
-            {% endif %}
-        )
-
-        as currency_code
-
-    from joined
-    left join invoices 
-        on (joined.invoice_id = invoices.invoice_id
-        and joined.source_relation = invoices.source_relation)
-    left join payments
-        on (joined.payment_id = payments.payment_id
-        and joined.source_relation = payments.source_relation)
-    {% if var('xero__using_bank_transaction', True) %}
-    left join bank_transactions
-        on (joined.bank_transaction_id = bank_transactions.bank_transaction_id
-        and joined.source_relation = bank_transactions.source_relation)
-    left join bank_transfers
-        on (joined.bank_transfer_id = bank_transfers.bank_transfer_id
-        and joined.source_relation = bank_transfers.source_relation)
-    {% endif %}
-
-    {% if var('xero__using_credit_note', True) %}
-    left join credit_notes 
-        on (joined.credit_note_id = credit_notes.credit_note_id
-        and joined.source_relation = credit_notes.source_relation)
-    {% endif %}
-    {{ dbt_utils.group_by(42) }}
-
-), second_contact as (
-
-    select 
-        first_contact.*,
-        case 
-            when coalesce(bank_transaction_id, invoice_id, credit_note_id) is not null
-                then (first_contact.joined_net_amount / fxcad.currency_rate)  * fxus.currency_rate
-            end as common_values,
-
-        case
-            when coalesce(bank_transfer_id, payment_id) is not null
-                then (first_contact.raw_net_amount / fxall.currency_rate) * fxus.currency_rate
-        end as bank_transfer_values,
-        contacts.contact_name
-    from first_contact
-    left join {{ ref('xero__fx') }} fxcad on fxcad.date = first_contact.journal_date
-    left join {{ ref('xero__fx') }} fxus on fxus.date = first_contact.journal_date
-    left join {{ ref('xero__fx') }} fxall on  
-            fxall.date = first_contact.journal_date and 
-            fxall.currency_code = coalesce(first_contact.bt_classification, first_contact.currency_code, 'USD')
-    left join contacts 
-        on (first_contact.contact_id = contacts.contact_id
-        and first_contact.source_relation = contacts.source_relation)
-    where fxcad.currency_code = 'CAD' and fxus.currency_code = 'USD'
-)
-
-select *, coalesce(common_values, bank_transfer_values) as final_net_amount
-from second_contact
+    SELECT
+        journal_id,
+        journal_date,
+        MONTH,
+        journal_number,
+        REFERENCE,
+        source_id,
+        source_type,
+        source_type_category,
+        source_relation,
+        journal_line_id,
+        account_code,
+        account_id,
+        account_name,
+        account_type,
+        account_currency_code,
+        base_currency,
+        account_description,
+        description,
+        OPTION,
+        base_currency_net_amount,
+        currency_code,
+        raw_amount,
+        CASE
+            WHEN account_currency_code = base_currency THEN base_currency_net_amount
+            -- Hardcoded for now
+            ELSE raw_amount * 1.3036704842
+        END AS adj_amount
+    FROM
+        raw_net_amount -- TODO: match raw amount currency code and transform to today's currency rate
+        -- Get Xe.com's currency rate
