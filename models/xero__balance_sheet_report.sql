@@ -106,7 +106,7 @@ joined AS (
         -- New Stuff
         source_type,
         source_type_category,
-        ledger.net_revalued net_amount
+        ledger.net_revalued as net_amount
     FROM
         calendar
         INNER JOIN ledger
