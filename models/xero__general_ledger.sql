@@ -10,7 +10,6 @@ WITH ORGANIZATION AS (
         *
     FROM
         {{ var('journal') }}
-        -- Union all con manual
 ),
 journal_lines AS (
     SELECT
@@ -29,11 +28,9 @@ journal_lines AS (
         j.tax_name,
         j.tax_type
     FROM
-        {{ var('journal_line') }}
-        j --1062602
-        LEFT JOIN {{ var('journal_line_tracking') }}
-        jt
-        ON --1062602
+        {{ var('journal_line') }} AS j 
+        LEFT JOIN {{ var('journal_line_tracking') }} AS jt
+        ON
         j.journal_line_id = jt.journal_line_id {{ dbt_utils.group_by(14) }}
 ),
 accounts AS (
@@ -72,9 +69,9 @@ invoices AS (
             )
         END AS OPTION
     FROM
-        {{ var('invoice') }} AS i --32244
+        {{ var('invoice') }} AS i
         LEFT JOIN {{ var('invoice_line_item_tracking') }} AS it
-        ON --48049
+        ON
         i.invoice_id = it.invoice_id {{ dbt_utils.group_by(21) }}
 
         {% if var(
@@ -102,8 +99,7 @@ bank_transactions_pre AS (
             )
         END AS OPTION
     FROM
-        {{ var('bank_transaction') }}
-        b --288,092
+        {{ var('bank_transaction') }} AS b
         LEFT JOIN {{ var('bank_transaction_tracking') }} AS bt
         ON --289,577
         b.bank_transaction_id = bt.bank_transaction_id {{ dbt_utils.group_by(8) }}
@@ -137,10 +133,17 @@ bank_transfers AS (
         btt.currency_code AS to_currency_code,
         btt.amount AS to_amount,
         b.has_attachments,
-        b.source_relation
+        b.source_relation,
+        COALESCE(
+            btf.option,
+            btt.option
+        ) AS OPTION,
+        COALESCE(
+            btf.contact_id,
+            btt.contact_id
+        ) AS contact_id
     FROM
-        {{ var('bank_transfer') }}
-        b --8,368
+        {{ var('bank_transfer') }} AS b
         LEFT JOIN bank_transactions AS btf
         ON b.from_bank_transaction_id = btf.bank_transaction_id
         LEFT JOIN bank_transactions AS btt
@@ -172,7 +175,7 @@ credit_notes AS (
             )
         END AS OPTION
     FROM
-        {{ var('credit_note') }} C
+        {{ var('credit_note') }} AS C
         LEFT JOIN {{ var('credit_note_tracking') }} AS ct
         ON C.credit_note_id = ct.credit_note_id {{ dbt_utils.group_by(8) }}
     {% endif %}
@@ -201,28 +204,36 @@ raw_amounts AS (
     SELECT
         invoice_id AS source_id,
         amount,
-        currency_code
+        currency_code,
+        OPTION,
+        contact_id
     FROM
         invoices
     UNION ALL
     SELECT
         bank_transaction_id AS source_id,
         amount,
-        currency_code
+        currency_code,
+        OPTION,
+        contact_id
     FROM
         bank_transactions
     UNION ALL
     SELECT
         bank_transfer_id AS source_id,
         amount,
-        from_currency_code
+        from_currency_code,
+        OPTION,
+        contact_id
     FROM
         bank_transfers
     UNION ALL
     SELECT
         credit_note_id AS source_id,
         amount,
-        currency_code
+        currency_code,
+        OPTION,
+        contact_id
     FROM
         credit_notes
     UNION ALL
@@ -230,7 +241,13 @@ raw_amounts AS (
     SELECT
         payment_id AS source_id,
         amount,
-        "CAD" AS currency_code
+        "CAD" AS currency_code,
+        CAST(
+            NULL AS STRING
+        ) AS OPTION,
+        CAST(
+            NULL AS STRING
+        ) AS contact_id
     FROM
         payments
 ),
@@ -248,6 +265,7 @@ enriched_journal AS (
         accounts.account_id,
         accounts.account_name,
         accounts.account_type,
+        accounts.account_class,
         accounts.currency_code AS account_currency_code,
         accounts.description AS account_description,
         journal_lines.description,
@@ -256,8 +274,7 @@ enriched_journal AS (
         journal_lines.net_amount,
         journal_lines.tax_amount,
         journal_lines.tax_name,
-        journal_lines.tax_type,
-        accounts.account_class
+        journal_lines.tax_type
     FROM
         journals
         LEFT JOIN journal_lines
@@ -315,6 +332,7 @@ first_contact AS (
         enriched_journal.account_id,
         enriched_journal.account_name,
         enriched_journal.account_type,
+        enriched_journal.account_class,
         enriched_journal.account_currency_code,
         enriched_journal.account_description,
         enriched_journal.description,
@@ -343,6 +361,7 @@ net_base_currency AS (
         account_id,
         account_name,
         account_type,
+        account_class,
         COALESCE(
             account_currency_code,
             o.base_currency
@@ -359,15 +378,18 @@ net_base_currency AS (
 raw_net_amount AS (
     SELECT
         nb.*,
+        C.contact_name,
         ra.amount * COALESCE(
-            safe_divide(ABS(base_currency_net_amount), base_currency_net_amount),
-            1) AS raw_amount,
-            ra.currency_code
-            FROM
-                net_base_currency nb
-                LEFT JOIN raw_amounts AS ra
-                ON nb.source_id = ra.source_id
-        )
+        safe_divide(ABS(base_currency_net_amount), base_currency_net_amount), 1) AS raw_amount,
+        ra.currency_code
+    FROM
+        net_base_currency nb
+        LEFT JOIN raw_amounts AS ra
+        ON nb.source_id = ra.source_id
+        LEFT JOIN contacts AS C -- Relationship is 1 - 1 in this case
+        ON ra.contact_id = C.contact_id
+),
+summary AS (
     SELECT
         journal_id,
         journal_date,
@@ -383,19 +405,77 @@ raw_net_amount AS (
         account_id,
         account_name,
         account_type,
+        account_class,
         account_currency_code,
         base_currency,
         account_description,
         description,
         OPTION,
-        base_currency_net_amount,
+        contact_name,
+        base_currency_net_amount AS net_amount,
         currency_code,
         raw_amount,
         CASE
+        -- TODO: Bring those FX rates from XE.com
             WHEN account_currency_code = base_currency THEN base_currency_net_amount
-            -- Hardcoded for now
-            ELSE raw_amount * 1.3036704842
-        END AS adj_amount
+            WHEN currency_code = "CAD" THEN raw_amount * 1
+            WHEN currency_code = "GBP" THEN raw_amount * 1.56
+            WHEN currency_code = "USD" THEN raw_amount * 1.3036705
+            WHEN currency_code = "SEK" THEN raw_amount * 0.12
+            WHEN currency_code = "AUD" THEN raw_amount * 0.89
+            WHEN currency_code = "CHF" THEN raw_amount * 1.32
+            WHEN currency_code = "EUR" THEN raw_amount * 1.32
+            WHEN currency_code = "JPY" THEN raw_amount * 0.0095
+            WHEN currency_code = "HKD" THEN raw_amount * 0.16
+            ELSE base_currency_net_amount
+        END AS net_revalued
     FROM
-        raw_net_amount -- TODO: match raw amount currency code and transform to today's currency rate
-        -- Get Xe.com's currency rate
+        raw_net_amount 
+),
+sign_change AS (
+    SELECT
+        *
+    EXCEPT(net_revalued),
+        CASE
+            WHEN UPPER(account_class) IN (
+                "EQUITY",
+                "LIABILITY"
+            ) THEN CASE
+                WHEN source_type_category = "Payable Invoice" THEN -1 * net_revalued
+                WHEN source_type_category = "Receivable Invoice" THEN -1 * net_revalued
+                WHEN source_type_category = "Receivable Credit Note" THEN 1 * net_revalued
+                WHEN source_type_category = "Payable Credit Note" THEN 1 * net_revalued
+                WHEN source_type_category = "Receivable Payment" THEN -1 * net_revalued
+                WHEN source_type_category = "Payable Payment" THEN -1 * net_revalued
+                WHEN source_type_category = "Receivable Credit Note Payment" THEN 1 * net_revalued
+                WHEN source_type_category = "Payable Credit Note Payment" THEN 1 * net_revalued
+                WHEN source_type_category = "Receive Money" THEN -1 * net_revalued
+                WHEN source_type_category = "Spend Money" THEN -1 * net_revalued
+                WHEN source_type_category = "Bank Transfer" THEN -1 * net_revalued
+                WHEN source_type_category = "Receivable Prepayment" THEN 1 * net_revalued
+                WHEN source_type_category = "Payable Prepayment" THEN 1 * net_revalued
+                WHEN source_type_category = "Receivable Overpayment" THEN 1 * net_revalued
+                WHEN source_type_category = "Payable Overpayment" THEN 1 * net_revalued
+                WHEN source_type_category = "Expense Claim" THEN 1 * net_revalued
+                WHEN source_type_category = "Expense Claim Payment" THEN 1 * net_revalued
+                WHEN source_type_category = "Manual Journal" THEN -1 * net_revalued
+                WHEN source_type_category = "Payslip" THEN 1 * net_revalued
+                WHEN source_type_category = "Payroll Payable" THEN 1 * net_revalued
+                WHEN source_type_category = "Payroll Expense" THEN 1 * net_revalued
+                WHEN source_type_category = "Payroll Payment" THEN 1 * net_revalued
+                WHEN source_type_category = "Payroll Employee Payment" THEN 1 * net_revalued
+                WHEN source_type_category = "Payroll Tax Payment" THEN 1 * net_revalued
+                WHEN source_type_category = "Payroll Credit Note" THEN 1 * net_revalued
+                WHEN source_type_category = "Conversion Balance Journal" THEN -1 * net_revalued
+                WHEN source_type_category = "End of Period" THEN 1 * net_revalued
+                ELSE net_revalued
+            END
+            ELSE net_revalued
+        END AS net_revalued
+    FROM
+        summary
+)
+SELECT
+*
+FROM
+sign_change

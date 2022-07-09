@@ -18,7 +18,7 @@ with calendar as (
         ledger.account_code,
         ledger.account_type, 
         ledger.account_class,
-        ledger.full_option,
+        ledger.option,
         ledger.source_relation, 
         coalesce(sum(ledger.net_amount * -1),0) as net_amount
     from calendar
