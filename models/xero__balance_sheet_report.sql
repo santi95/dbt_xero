@@ -106,7 +106,7 @@ joined AS (
         -- New Stuff
         source_type,
         source_type_category,
-        ledger.net_revalued as net_amount
+        ledger.net_revalued AS net_amount
     FROM
         calendar
         INNER JOIN ledger
@@ -123,4 +123,5 @@ SELECT
 FROM
     joined
 WHERE
-    net_amount != 0 and account_code is not null
+    net_amount != 0
+    AND account_code IS NOT NULL
