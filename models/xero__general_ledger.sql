@@ -1,3 +1,5 @@
+
+
 WITH ORGANIZATION AS (
     SELECT
         base_currency
@@ -28,9 +30,9 @@ journal_lines AS (
         j.tax_name,
         j.tax_type
     FROM
-        {{ var('journal_line') }} AS j 
+        {{ var('journal_line') }} AS j --1062602
         LEFT JOIN {{ var('journal_line_tracking') }} AS jt
-        ON
+        ON --1062602
         j.journal_line_id = jt.journal_line_id {{ dbt_utils.group_by(14) }}
 ),
 accounts AS (
@@ -69,9 +71,9 @@ invoices AS (
             )
         END AS OPTION
     FROM
-        {{ var('invoice') }} AS i
+        {{ var('invoice') }} AS i --32244
         LEFT JOIN {{ var('invoice_line_item_tracking') }} AS it
-        ON
+        ON --48049
         i.invoice_id = it.invoice_id {{ dbt_utils.group_by(21) }}
 
         {% if var(
@@ -99,7 +101,7 @@ bank_transactions_pre AS (
             )
         END AS OPTION
     FROM
-        {{ var('bank_transaction') }} AS b
+        {{ var('bank_transaction') }} AS b --288,092
         LEFT JOIN {{ var('bank_transaction_tracking') }} AS bt
         ON --289,577
         b.bank_transaction_id = bt.bank_transaction_id {{ dbt_utils.group_by(8) }}
@@ -143,7 +145,7 @@ bank_transfers AS (
             btt.contact_id
         ) AS contact_id
     FROM
-        {{ var('bank_transfer') }} AS b
+        {{ var('bank_transfer') }} AS b --8,368
         LEFT JOIN bank_transactions AS btf
         ON b.from_bank_transaction_id = btf.bank_transaction_id
         LEFT JOIN bank_transactions AS btt
@@ -194,6 +196,24 @@ payments AS (
     FROM
         {{ var('payment') }}
 ),
+overpayments AS (
+    SELECT
+        o.overpayment_id,
+        o.contact_id,
+        o.currency_code,
+        o.total as amount,
+        CASE
+            WHEN COUNT(1) > 1 THEN 'Multiple Categories'
+            ELSE MAX(
+                olt.option
+            )
+        END AS OPTION
+    FROM
+        {{ var('overpayment') }} o
+    left join {{ var('overpayment_line') }} as ol on ol.overpayment_id = o.overpayment_id
+    left join {{ var('overpayment_line_tracking') }} as olt on olt.line_item_id = ol.line_item_id
+    {{ dbt_utils.group_by(4) }}
+),
 contacts AS (
     SELECT
         *
@@ -210,6 +230,14 @@ raw_amounts AS (
     FROM
         invoices
     UNION ALL
+    select
+        overpayment_id as source_id,
+        amount,
+        currency_code,
+        option,
+        contact_id
+    from overpayments
+    UNION ALL
     SELECT
         bank_transaction_id AS source_id,
         amount,
@@ -218,15 +246,6 @@ raw_amounts AS (
         contact_id
     FROM
         bank_transactions
-    UNION ALL
-    SELECT
-        bank_transfer_id AS source_id,
-        amount,
-        from_currency_code,
-        OPTION,
-        contact_id
-    FROM
-        bank_transfers
     UNION ALL
     SELECT
         credit_note_id AS source_id,
@@ -240,8 +259,10 @@ raw_amounts AS (
         -- We need to get the currency_code for payments first
     SELECT
         payment_id AS source_id,
-        amount,
-        "CAD" AS currency_code,
+        bank_amount,
+        CAST(
+            NULL AS STRING
+        ) AS currency_code,
         CAST(
             NULL AS STRING
         ) AS OPTION,
@@ -250,6 +271,30 @@ raw_amounts AS (
         ) AS contact_id
     FROM
         payments
+),
+bank_transfers_raw_amounts_pre as (
+    SELECT
+        bank_transfer_id AS source_id,
+        from_amount as raw_amount,
+        from_currency_code as currency_code,
+        OPTION,
+        contact_id
+    FROM
+        bank_transfers
+    UNION ALL
+    SELECT
+        bank_transfer_id AS source_id,
+        to_amount as raw_amount,
+        to_currency_code as currency_code,
+        OPTION,
+        contact_id
+    FROM
+        bank_transfers
+),
+bank_transfers_raw_amounts as (
+    select *
+    from bank_transfers_raw_amounts_pre
+    {{ dbt_utils.group_by(5) }}
 ),
 enriched_journal AS (
     SELECT
@@ -370,7 +415,11 @@ net_base_currency AS (
         account_description,
         description,
         OPTION,
-        net_amount AS base_currency_net_amount
+        net_amount AS base_currency_net_amount,
+        SUM(net_amount) over (
+            PARTITION BY source_id,
+            account_code
+        ) AS base_currency_total_net_amount
     FROM
         first_contact AS fc
         CROSS JOIN ORGANIZATION AS o
@@ -379,14 +428,28 @@ raw_net_amount AS (
     SELECT
         nb.*,
         C.contact_name,
-        ra.amount * COALESCE(
-        safe_divide(ABS(base_currency_net_amount), base_currency_net_amount), 1) AS raw_amount,
-        ra.currency_code
+        coalesce(abs(ra.amount), abs(btr.raw_amount)) * -- Sign change
+        COALESCE(
+            safe_divide(
+                base_currency_net_amount,
+                ABS(base_currency_net_amount)
+            ),
+            1
+        ) * -- Proportion with the multiple journal lines per source_id
+        COALESCE(
+            safe_divide(ABS(base_currency_net_amount), ABS(base_currency_total_net_amount)), 1) AS raw_amount,
+        COALESCE(
+            ra.currency_code,
+            account_currency_code
+        ) AS currency_code
     FROM
         net_base_currency nb
-        LEFT JOIN raw_amounts AS ra
+    LEFT JOIN raw_amounts AS ra
         ON nb.source_id = ra.source_id
-        LEFT JOIN contacts AS C -- Relationship is 1 - 1 in this case
+    left join bank_transfers_raw_amounts btr on 
+        nb.source_id = btr.source_id and 
+        nb.account_currency_code = btr.currency_code
+    LEFT JOIN contacts AS C -- Relationship is 1 - 1 in this case
         ON ra.contact_id = C.contact_id
 ),
 summary AS (
@@ -413,14 +476,14 @@ summary AS (
         OPTION,
         contact_name,
         base_currency_net_amount AS net_amount,
+        base_currency_total_net_amount,
         currency_code,
         raw_amount,
         CASE
-        -- TODO: Bring those FX rates from XE.com
             WHEN account_currency_code = base_currency THEN base_currency_net_amount
             WHEN currency_code = "CAD" THEN raw_amount * 1
             WHEN currency_code = "GBP" THEN raw_amount * 1.56
-            WHEN currency_code = "USD" THEN raw_amount * 1.3036705
+            WHEN currency_code = "USD" THEN raw_amount * 1.28926
             WHEN currency_code = "SEK" THEN raw_amount * 0.12
             WHEN currency_code = "AUD" THEN raw_amount * 0.89
             WHEN currency_code = "CHF" THEN raw_amount * 1.32
@@ -430,7 +493,8 @@ summary AS (
             ELSE base_currency_net_amount
         END AS net_revalued
     FROM
-        raw_net_amount 
+        raw_net_amount -- TODO: match raw amount currency code and transform to today's currency rate
+        -- Get Xe.com's currency rate
 ),
 sign_change AS (
     SELECT
@@ -441,21 +505,22 @@ sign_change AS (
                 "EQUITY",
                 "LIABILITY"
             ) THEN CASE
+                WHEN source_type_category = "Payable Credit Note" THEN -1 * net_revalued
+                WHEN source_type_category = "Payable Credit Note Payment" THEN -1 * net_revalued
+                -- Changed 
+                WHEN source_type_category = "Payable Overpayment" THEN 1 * net_revalued
+                WHEN source_type_category = "Payable Payment" THEN -1 * net_revalued
                 WHEN source_type_category = "Payable Invoice" THEN -1 * net_revalued
                 WHEN source_type_category = "Receivable Invoice" THEN -1 * net_revalued
                 WHEN source_type_category = "Receivable Credit Note" THEN 1 * net_revalued
-                WHEN source_type_category = "Payable Credit Note" THEN 1 * net_revalued
                 WHEN source_type_category = "Receivable Payment" THEN -1 * net_revalued
-                WHEN source_type_category = "Payable Payment" THEN -1 * net_revalued
                 WHEN source_type_category = "Receivable Credit Note Payment" THEN 1 * net_revalued
-                WHEN source_type_category = "Payable Credit Note Payment" THEN 1 * net_revalued
                 WHEN source_type_category = "Receive Money" THEN -1 * net_revalued
                 WHEN source_type_category = "Spend Money" THEN -1 * net_revalued
                 WHEN source_type_category = "Bank Transfer" THEN -1 * net_revalued
                 WHEN source_type_category = "Receivable Prepayment" THEN 1 * net_revalued
                 WHEN source_type_category = "Payable Prepayment" THEN 1 * net_revalued
-                WHEN source_type_category = "Receivable Overpayment" THEN 1 * net_revalued
-                WHEN source_type_category = "Payable Overpayment" THEN 1 * net_revalued
+                WHEN source_type_category = "Receivable Overpayment" THEN 1 * net_revalued 
                 WHEN source_type_category = "Expense Claim" THEN 1 * net_revalued
                 WHEN source_type_category = "Expense Claim Payment" THEN 1 * net_revalued
                 WHEN source_type_category = "Manual Journal" THEN -1 * net_revalued
@@ -475,7 +540,8 @@ sign_change AS (
     FROM
         summary
 )
-SELECT
-*
-FROM
-sign_change
+    SELECT
+        *
+    FROM
+        sign_change
+    -- There are some conversion balances added manually, addint them here for now
