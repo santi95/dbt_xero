@@ -1,7 +1,10 @@
 /*
 in order to generate trancking_category_name as a column we set a dictionary
-dictionary has the following appareance{'tracking_category_id' : [tuple of available id], 'tracking_category_name': [tuple of available names]}
-position match for id and name since the dictionary was generated with a sql statement 
+Dictionary has the following structure:
+    {'tracking_category_id' : ['id_1', 'id_2', ..., 'id_N'], 
+    'tracking_category_name': ['category_name_1', 'category_name_2', ..., 'category_name_N']}
+
+Order matters for these arrays, as the N tracking_category_id corresponds to the element with the N tracking_category_name
 */
 
 {% set tracking_category_sql %}
@@ -17,11 +20,11 @@ position match for id and name since the dictionary was generated with a sql sta
 {% if execute %}
     -- fivetran_utils depends on dbt_utils 
     {% set tc_dict = dbt_utils.get_query_results_as_dict(tracking_category_sql) %}
-    {% set tc_length = tc_dict['tracking_category_id']|length %}
+    {% set number_tracking_categories = tc_dict['tracking_category_id']|length %}
 
     -- since this case when is repetead for all source_type, we set it here as a macro and call it each time it is needed
-    {% set case_when_tracking_category %}
-        {% for n in range(0, tc_length )%}
+    {% set tracking_category_generator %}
+        {% for n in range(0, number_tracking_categories )%}
             case when tracking_category_id = '{{tc_dict['tracking_category_id'][n]}}'
                 -- we concate available options for that tracking_category_id 
                 then string_agg(distinct option, ' | ') 
@@ -31,8 +34,8 @@ position match for id and name since the dictionary was generated with a sql sta
     {% endset %}
 
 {% else %}
-    {% set tc_length = 1 %}
-    {% set case_when_tracking_category = '' %} 
+    {% set number_tracking_categories = 1 %}
+    {% set tracking_category_generator = '' %} 
 {% endif%}
 
 
@@ -59,7 +62,7 @@ with journals as (
         j.tax_amount,
         j.tax_name,
         j.tax_type,
-        {{case_when_tracking_category}}
+        {{tracking_category_generator}}
 
     from {{ var('journal_line') }} j
     left join {{  var('journal_line_tracking') }} jt on
@@ -94,7 +97,7 @@ with journals as (
         i.url,
         it.option,
         it.tracking_category_id,
-        {{case_when_tracking_category}}
+        {{tracking_category_generator}}
 
     from {{ var('invoice') }} i
     left join {{ var('invoice_line_item_tracking') }} it on
@@ -110,7 +113,7 @@ with journals as (
         b.contact_id,
         bt.option,
         bt.tracking_category_id,
-        {{case_when_tracking_category}}
+        {{tracking_category_generator}}
     from {{ var('bank_transaction') }} b
     left join {{ var('bank_transaction_tracking') }} bt on
         b.bank_transaction_id = bt.bank_transaction_id
@@ -128,7 +131,7 @@ with journals as (
         c.contact_id, 
         ct.option,
         ct.tracking_category_id,
-        {{case_when_tracking_category}}
+        {{tracking_category_generator}}
     from {{ var('credit_note') }} c
     left join {{ var('credit_note_tracking') }} ct on
         c.credit_note_id = ct.credit_note_id
@@ -159,7 +162,7 @@ with journals as (
         accounts.account_type,
         journal_lines.description,
         journal_lines.option,
-        {% for n in range(0, tc_length )%}
+        {% for n in range(0, number_tracking_categories )%}
         journal_lines.{{tc_dict['tracking_category_name'][n]}} , 
         {% endfor %}
         journal_lines.gross_amount,
@@ -232,7 +235,7 @@ with journals as (
 
         as contact_id
 
-        {% for n in range(0, tc_length )%}
+        {% for n in range(0, number_tracking_categories )%}
         ,coalesce(
             joined.{{tc_dict['tracking_category_name'][n]}}, 
             invoices.{{tc_dict['tracking_category_name'][n]}}
@@ -264,7 +267,7 @@ with journals as (
         on (joined.credit_note_id = credit_notes.credit_note_id
         and joined.source_relation = credit_notes.source_relation)
     {% endif %}
-    {{ dbt_utils.group_by(28 + tc_length) }}
+    {{ dbt_utils.group_by(28 + number_tracking_categories) }}
 
 ), second_contact as (
 
