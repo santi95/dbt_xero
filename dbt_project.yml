@@ -19,8 +19,6 @@ vars:
     bank_transaction: "{{ ref('stg_xero__bank_transaction') }}"
     bank_transaction_tracking: "{{ ref('stg_xero__bank_transaction_tracking') }}"
 
-    xero__using_bank_transaction: true
-    xero__using_credit_note: true
 
 models:
   xero:
