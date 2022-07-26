@@ -182,20 +182,6 @@ credit_notes AS (
         ON C.credit_note_id = ct.credit_note_id {{ dbt_utils.group_by(8) }}
     {% endif %}
 ),
-payments AS (
-    SELECT
-        payment_id,
-        account_id,
-        currency_rate,
-        DATE,
-        status,
-        amount,
-        bank_amount,
-        invoice_id,
-        credit_note_id
-    FROM
-        {{ var('payment') }}
-),
 overpayments AS (
     SELECT
         o.overpayment_id,
@@ -214,6 +200,19 @@ overpayments AS (
     left join {{ var('overpayment_line_tracking') }} as olt on olt.line_item_id = ol.line_item_id
     {{ dbt_utils.group_by(4) }}
 ),
+payments AS (
+    SELECT
+        p.payment_id,
+        p.account_id,
+        p.currency_rate,
+        p.DATE,
+        p.status,
+        p.amount,
+        p.bank_amount,
+        coalesce(p.invoice_id,p.credit_note_id) as source_id,
+    FROM
+        {{ var('payment') }} p
+), 
 contacts AS (
     SELECT
         *
@@ -256,21 +255,19 @@ raw_amounts AS (
     FROM
         credit_notes
     UNION ALL
-        -- We need to get the currency_code for payments first
-    SELECT
-        payment_id AS source_id,
-        bank_amount,
-        CAST(
-            NULL AS STRING
-        ) AS currency_code,
+    select 
+        payment_id,
+        coalesce(bank_amount, amount) as amount,
+        a.currency_code as currency_code,
         CAST(
             NULL AS STRING
         ) AS OPTION,
         CAST(
             NULL AS STRING
-        ) AS contact_id
-    FROM
-        payments
+        ) AS contact_id,
+    from payments as p
+    left join accounts as a on 
+        p.account_id = a.account_id
 ),
 bank_transfers_raw_amounts_pre as (
     SELECT
@@ -311,6 +308,8 @@ enriched_journal AS (
         accounts.account_name,
         accounts.account_type,
         accounts.account_class,
+        accounts.account_system_account,
+        accounts.account_status,
         accounts.currency_code AS account_currency_code,
         accounts.description AS account_description,
         journal_lines.description,
@@ -378,6 +377,8 @@ first_contact AS (
         enriched_journal.account_name,
         enriched_journal.account_type,
         enriched_journal.account_class,
+        enriched_journal.account_system_account,
+        enriched_journal.account_status,
         enriched_journal.account_currency_code,
         enriched_journal.account_description,
         enriched_journal.description,
@@ -407,7 +408,10 @@ net_base_currency AS (
         account_name,
         account_type,
         account_class,
+        account_system_account,
+        account_status,
         COALESCE(
+            -- Instead of base_currency for system accounts -> grab account_id of the source transaction
             account_currency_code,
             o.base_currency
         ) AS account_currency_code,
@@ -469,6 +473,7 @@ summary AS (
         account_name,
         account_type,
         account_class,
+        account_system_account,
         account_currency_code,
         base_currency,
         account_description,
@@ -480,7 +485,11 @@ summary AS (
         currency_code,
         raw_amount,
         CASE
-            WHEN account_currency_code = base_currency THEN base_currency_net_amount
+            WHEN account_currency_code = base_currency and account_system_account is null
+                    THEN base_currency_net_amount
+            when currency_code = account_currency_code and account_system_account is not null
+                    THEN base_currency_net_amount
+            -- Mejuri
             WHEN currency_code = "CAD" THEN raw_amount * 1
             WHEN currency_code = "GBP" THEN raw_amount * 1.56
             WHEN currency_code = "USD" THEN raw_amount * 1.28926
@@ -490,7 +499,13 @@ summary AS (
             WHEN currency_code = "EUR" THEN raw_amount * 1.32
             WHEN currency_code = "JPY" THEN raw_amount * 0.0095
             WHEN currency_code = "HKD" THEN raw_amount * 0.16
-            ELSE base_currency_net_amount
+            -- 
+            -- Agriwebb
+            -- WHEN currency_code = "GBP" THEN raw_amount * 1.758779829
+            -- WHEN currency_code = "USD" THEN raw_amount * 1.37927991 
+            -- WHEN currency_code = "AUD" THEN raw_amount * 1
+            -- WHEN currency_code = "EUR" THEN raw_amount * 1.53
+            -- ELSE base_currency_net_amount
         END AS net_revalued
     FROM
         raw_net_amount -- TODO: match raw amount currency code and transform to today's currency rate
