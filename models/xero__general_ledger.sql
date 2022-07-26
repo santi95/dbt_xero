@@ -75,131 +75,131 @@ invoices AS (
         LEFT JOIN {{ var('invoice_line_item_tracking') }} AS it
         ON --48049
         i.invoice_id = it.invoice_id {{ dbt_utils.group_by(21) }}
+),
 
-        {% if var(
-                'xero__using_bank_transaction',
-                True
-            ) %}
-),
-bank_transactions_pre AS (
-    SELECT
-        b.bank_transaction_id,
-        b.source_relation,
-        b.contact_id,
-        b.sub_total,
-        b.total,
-        b.total_tax,
-        COALESCE(
-            b.currency_rate,
-            1
-        ) AS currency_rate,
-        currency_code,
-        CASE
-            WHEN COUNT(1) > 1 THEN 'Multiple Categories'
-            ELSE MAX(
-                bt.option
-            )
-        END AS OPTION
-    FROM
-        {{ var('bank_transaction') }} AS b --288,092
-        LEFT JOIN {{ var('bank_transaction_tracking') }} AS bt
-        ON --289,577
-        b.bank_transaction_id = bt.bank_transaction_id {{ dbt_utils.group_by(8) }}
-),
-bank_transactions AS (
-    SELECT
-        bank_transaction_id,
-        source_relation,
-        contact_id,
-        currency_rate,
-        currency_code,
-        sub_total,
-        total AS amount,
-        total_tax,
-        OPTION
-    FROM
-        bank_transactions_pre {{ dbt_utils.group_by(9) }}
-),
-bank_transfers AS (
-    SELECT
-        b.bank_transfer_id,
-        b.date,
-        b.amount,
-        b.currency_rate,
-        b.from_bank_account_id,
-        b.from_bank_transaction_id,
-        btf.currency_code AS from_currency_code,
-        btf.amount AS from_amount,
-        b.to_bank_account_id,
-        b.to_bank_transaction_id,
-        btt.currency_code AS to_currency_code,
-        btt.amount AS to_amount,
-        b.has_attachments,
-        b.source_relation,
-        COALESCE(
-            btf.option,
-            btt.option
-        ) AS OPTION,
-        COALESCE(
-            btf.contact_id,
-            btt.contact_id
-        ) AS contact_id
-    FROM
-        {{ var('bank_transfer') }} AS b --8,368
-        LEFT JOIN bank_transactions AS btf
-        ON b.from_bank_transaction_id = btf.bank_transaction_id
-        LEFT JOIN bank_transactions AS btt
-        ON b.to_bank_transaction_id = btt.bank_transaction_id
+{% if var('xero__using_bank_transaction',True) %}
+    bank_transactions_pre AS (
+        SELECT
+            b.bank_transaction_id,
+            b.source_relation,
+            b.contact_id,
+            b.sub_total,
+            b.total,
+            b.total_tax,
+            COALESCE(
+                b.currency_rate,
+                1
+            ) AS currency_rate,
+            currency_code,
+            CASE
+                WHEN COUNT(1) > 1 THEN 'Multiple Categories'
+                ELSE MAX(
+                    bt.option
+                )
+            END AS OPTION
+        FROM
+            {{ var('bank_transaction') }} AS b --288,092
+            LEFT JOIN {{ var('bank_transaction_tracking') }} AS bt
+            ON --289,577
+            b.bank_transaction_id = bt.bank_transaction_id {{ dbt_utils.group_by(8) }}
+    ),
+    bank_transactions AS (
+        SELECT
+            bank_transaction_id,
+            source_relation,
+            contact_id,
+            currency_rate,
+            currency_code,
+            sub_total,
+            total AS amount,
+            total_tax,
+            OPTION
+        FROM
+            bank_transactions_pre {{ dbt_utils.group_by(9) }}
+    ),
+    -- Bank transfers are just a connection between bank_transactions, so nesting this if statement safely
+    {% if var('xero__using_bank_transfer',True) %}
+        bank_transfers AS (
+            SELECT
+                b.bank_transfer_id,
+                b.date,
+                b.amount,
+                b.currency_rate,
+                b.from_bank_account_id,
+                b.from_bank_transaction_id,
+                btf.currency_code AS from_currency_code,
+                btf.amount AS from_amount,
+                b.to_bank_account_id,
+                b.to_bank_transaction_id,
+                btt.currency_code AS to_currency_code,
+                btt.amount AS to_amount,
+                b.has_attachments,
+                b.source_relation,
+                COALESCE(
+                    btf.option,
+                    btt.option
+                ) AS OPTION,
+                COALESCE(
+                    btf.contact_id,
+                    btt.contact_id
+                ) AS contact_id
+            FROM
+                {{ var('bank_transfer') }} AS b --8,368
+                LEFT JOIN bank_transactions AS btf
+                ON b.from_bank_transaction_id = btf.bank_transaction_id
+                LEFT JOIN bank_transactions AS btt
+                ON b.to_bank_transaction_id = btt.bank_transaction_id
+        ),
     {% endif %}
+{% endif %}
 
-    {% if var(
-            'xero__using_credit_note',
-            True
-        ) %}
-),
-credit_notes AS (
-    SELECT
-        C.credit_note_id,
-        C.source_relation,
-        C.contact_id,
-        COALESCE(
-            C.currency_rate,
-            1
-        ) AS currency_rate,
-        currency_code,
-        C.sub_total,
-        C.total AS amount,
-        C.total_tax,
-        CASE
-            WHEN COUNT(1) > 1 THEN 'Multiple Categories'
-            ELSE MAX(
-                ct.option
-            )
-        END AS OPTION
-    FROM
-        {{ var('credit_note') }} AS C
-        LEFT JOIN {{ var('credit_note_tracking') }} AS ct
-        ON C.credit_note_id = ct.credit_note_id {{ dbt_utils.group_by(8) }}
-    {% endif %}
-),
-overpayments AS (
-    SELECT
-        o.overpayment_id,
-        o.contact_id,
-        o.currency_code,
-        o.total as amount,
-        CASE
-            WHEN COUNT(1) > 1 THEN 'Multiple Categories'
-            ELSE MAX(
-                olt.option
-            )
-        END AS OPTION
-    FROM
-        {{ var('overpayment') }} o
-    left join {{ var('overpayment_line') }} as ol on ol.overpayment_id = o.overpayment_id
-    left join {{ var('overpayment_line_tracking') }} as olt on olt.line_item_id = ol.line_item_id
-    {{ dbt_utils.group_by(4) }}
-),
+{% if var('xero__using_credit_note',True) %}
+    credit_notes AS (
+        SELECT
+            C.credit_note_id,
+            C.source_relation,
+            C.contact_id,
+            COALESCE(
+                C.currency_rate,
+                1
+            ) AS currency_rate,
+            currency_code,
+            C.sub_total,
+            C.total AS amount,
+            C.total_tax,
+            CASE
+                WHEN COUNT(1) > 1 THEN 'Multiple Categories'
+                ELSE MAX(
+                    ct.option
+                )
+            END AS OPTION
+        FROM
+            {{ var('credit_note') }} AS C
+            LEFT JOIN {{ var('credit_note_tracking') }} AS ct
+            ON C.credit_note_id = ct.credit_note_id {{ dbt_utils.group_by(8) }}
+    ),
+{% endif %}
+-- There are some instances that don't have overpayument_line_tracking only, and because of that we are considering using_overpayment as false
+{% if var('xero__using_overpayment',True) %}
+    overpayments AS (
+        SELECT
+            o.overpayment_id,
+            o.contact_id,
+            o.currency_code,
+            o.total as amount,
+            CASE
+                WHEN COUNT(1) > 1 THEN 'Multiple Categories'
+                ELSE MAX(
+                    olt.option
+                )
+            END AS OPTION
+        FROM
+            {{ var('overpayment') }} o
+        left join {{ var('overpayment_line') }} as ol on ol.overpayment_id = o.overpayment_id
+        left join {{ var('overpayment_line_tracking') }} as olt on olt.line_item_id = ol.line_item_id
+        {{ dbt_utils.group_by(4) }}
+    ),
+{% endif %}
 payments AS (
     SELECT
         p.payment_id,
@@ -228,32 +228,38 @@ raw_amounts AS (
         contact_id
     FROM
         invoices
-    UNION ALL
-    select
-        overpayment_id as source_id,
-        amount,
-        currency_code,
-        option,
-        contact_id
-    from overpayments
-    UNION ALL
-    SELECT
-        bank_transaction_id AS source_id,
-        amount,
-        currency_code,
-        OPTION,
-        contact_id
-    FROM
-        bank_transactions
-    UNION ALL
-    SELECT
-        credit_note_id AS source_id,
-        amount,
-        currency_code,
-        OPTION,
-        contact_id
-    FROM
-        credit_notes
+    {% if var('xero__using_overpayment',True) %}
+        UNION ALL
+        select
+            overpayment_id as source_id,
+            amount,
+            currency_code,
+            option,
+            contact_id
+        from overpayments
+    {% endif %}
+    {% if var('xero__using_bank_transaction',True) %}
+        UNION ALL
+        SELECT
+            bank_transaction_id AS source_id,
+            amount,
+            currency_code,
+            OPTION,
+            contact_id
+        FROM
+            bank_transactions
+    {% endif %}
+    {% if var('xero__using_credit_note',True) %}
+        UNION ALL
+        SELECT
+            credit_note_id AS source_id,
+            amount,
+            currency_code,
+            OPTION,
+            contact_id
+        FROM
+            credit_notes
+    {% endif %}
     UNION ALL
     select 
         payment_id,
@@ -269,30 +275,32 @@ raw_amounts AS (
     left join accounts as a on 
         p.account_id = a.account_id
 ),
-bank_transfers_raw_amounts_pre as (
-    SELECT
-        bank_transfer_id AS source_id,
-        from_amount as raw_amount,
-        from_currency_code as currency_code,
-        OPTION,
-        contact_id
-    FROM
-        bank_transfers
-    UNION ALL
-    SELECT
-        bank_transfer_id AS source_id,
-        to_amount as raw_amount,
-        to_currency_code as currency_code,
-        OPTION,
-        contact_id
-    FROM
-        bank_transfers
-),
-bank_transfers_raw_amounts as (
-    select *
-    from bank_transfers_raw_amounts_pre
-    {{ dbt_utils.group_by(5) }}
-),
+{% if var('xero__using_bank_transfer',True) %}
+    bank_transfers_raw_amounts_pre as (
+        SELECT
+            bank_transfer_id AS source_id,
+            from_amount as raw_amount,
+            from_currency_code as currency_code,
+            OPTION,
+            contact_id
+        FROM
+            bank_transfers
+        UNION ALL
+        SELECT
+            bank_transfer_id AS source_id,
+            to_amount as raw_amount,
+            to_currency_code as currency_code,
+            OPTION,
+            contact_id
+        FROM
+            bank_transfers
+    ),
+    bank_transfers_raw_amounts as (
+        select *
+        from bank_transfers_raw_amounts_pre
+        {{ dbt_utils.group_by(5) }}
+    ),
+{% endif %}
 enriched_journal AS (
     SELECT
         journals.journal_id,
@@ -432,7 +440,11 @@ raw_net_amount AS (
     SELECT
         nb.*,
         C.contact_name,
-        coalesce(abs(ra.amount), abs(btr.raw_amount)) * -- Sign change
+        coalesce(abs(ra.amount)
+            {% if var('xero__using_bank_transfer',True) %}
+                ,abs(btr.raw_amount)
+            {% endif %}
+        ) * -- Sign change
         COALESCE(
             safe_divide(
                 base_currency_net_amount,
@@ -450,9 +462,11 @@ raw_net_amount AS (
         net_base_currency nb
     LEFT JOIN raw_amounts AS ra
         ON nb.source_id = ra.source_id
-    left join bank_transfers_raw_amounts btr on 
-        nb.source_id = btr.source_id and 
-        nb.account_currency_code = btr.currency_code
+    {% if var('xero__using_bank_transfer',True) %}
+        left join bank_transfers_raw_amounts btr on 
+            nb.source_id = btr.source_id and 
+            nb.account_currency_code = btr.currency_code
+    {% endif %}
     LEFT JOIN contacts AS C -- Relationship is 1 - 1 in this case
         ON ra.contact_id = C.contact_id
 ),
